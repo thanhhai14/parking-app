@@ -1,0 +1,363 @@
+import asyncio
+import json
+import logging
+import uuid
+from datetime import datetime, timezone
+from sqlalchemy.future import select
+from sqlalchemy.orm import selectinload
+
+from core.database import async_session_maker
+from core.redis import redis_client
+from models.processed_event import ProcessedEvent
+from models.card import RfidCard
+from models.parking_lot import ParkingGate, ParkingZone, ParkingSite
+from models.session import ParkingSession
+from models.fee import FeeRule
+from services.pricing_service import PricingEngine
+
+logger = logging.getLogger("parking-api.event_consumer")
+
+def generate_session_code() -> str:
+    import random
+    now_str = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    rand_num = random.randint(1000, 9999)
+    return f"PK-{now_str}-{rand_num}"
+
+async def process_card_scanned(db, event_id: uuid.UUID, correlation_id: str, payload: dict, metadata: dict):
+    card_uid = payload.get("card_uid")
+    plate_number = payload.get("plate_number")
+    
+    # Gate reference can be in payload or metadata
+    gate_code = payload.get("gate_code") or payload.get("gate_id") or metadata.get("gate_id") or metadata.get("gate_code")
+    if not gate_code:
+        raise ValueError("Missing gate information (gate_code or gate_id) in event.")
+        
+    # 1. Fetch active card details
+    card_query = await db.execute(
+        select(RfidCard)
+        .options(selectinload(RfidCard.assigned_vehicle))
+        .where(RfidCard.card_uid == card_uid)
+    )
+    card = card_query.scalars().first()
+    if not card:
+        raise ValueError(f"Card not found: {card_uid}")
+    if card.status != "active":
+        raise ValueError(f"Card is not active: {card_uid} (status: {card.status})")
+        
+    # 2. Fetch gate details
+    # Attempt to resolve by ID if it's a UUID, otherwise by code
+    gate = None
+    try:
+        gate_uuid = uuid.UUID(str(gate_code))
+        gate_query = await db.execute(
+            select(ParkingGate)
+            .options(selectinload(ParkingGate.zone).selectinload(ParkingZone.site))
+            # Handle import of ParkingZone inside query helper if selectinload is complex, 
+            # but standard selectinload chain works.
+            .where(ParkingGate.id == gate_uuid)
+        )
+        gate = gate_query.scalars().first()
+    except ValueError:
+        pass
+        
+    if not gate:
+        # Fallback to query by code
+        gate_query = await db.execute(
+            select(ParkingGate)
+            .options(selectinload(ParkingGate.zone))
+            .where(ParkingGate.code == str(gate_code))
+        )
+        gate = gate_query.scalars().first()
+        
+    if not gate:
+        raise ValueError(f"Gate not found: {gate_code}")
+        
+    # 3. Check for existing active session to determine check-in vs check-out
+    active_session_query = await db.execute(
+        select(ParkingSession)
+        .where(ParkingSession.entry_card_id == card.id)
+        .where(ParkingSession.status == "active")
+    )
+    active_session = active_session_query.scalars().first()
+    
+    if not active_session:
+        # --- CHECK-IN ---
+        if gate.direction not in ["in", "both"]:
+            raise ValueError(f"Gate {gate.code} is not an entry gate (direction: {gate.direction})")
+            
+        vehicle_id = None
+        vehicle_type_id = None
+        owner_id = None
+        
+        if card.assigned_vehicle:
+            vehicle_id = card.assigned_vehicle.id
+            vehicle_type_id = card.assigned_vehicle.vehicle_type_id
+            owner_id = card.assigned_vehicle.owner_id
+        elif card.assigned_owner_id:
+            owner_id = card.assigned_owner_id
+            
+        session = ParkingSession(
+            session_code=generate_session_code(),
+            site_id=gate.zone.site_id,
+            zone_id=gate.zone_id,
+            gate_entry_id=gate.id,
+            vehicle_id=vehicle_id,
+            vehicle_type_id=vehicle_type_id,
+            owner_id=owner_id,
+            entry_card_id=card.id,
+            entry_time=datetime.now(timezone.utc),
+            entry_plate_number=plate_number,
+            status="active"
+        )
+        db.add(session)
+        await db.flush()
+        
+        # Publish checkin.created realtime event
+        realtime_event = {
+            "event_type": "parking.checkin.created",
+            "source": "parking-api",
+            "session_id": str(session.id),
+            "site_id": str(session.site_id),
+            "gate_id": str(session.gate_entry_id),
+            "correlation_id": correlation_id,
+            "payload": {
+                "session_code": session.session_code,
+                "card_uid": card.card_uid,
+                "entry_time": session.entry_time.isoformat(),
+                "entry_plate_number": session.entry_plate_number,
+                "status": session.status
+            }
+        }
+        await redis_client.redis.publish("parking.realtime", json.dumps(realtime_event))
+        logger.info(f"Check-in processed successfully for card {card_uid}. Session: {session.session_code}")
+        
+    else:
+        # --- CHECK-OUT ---
+        if gate.direction not in ["out", "both"]:
+            raise ValueError(f"Gate {gate.code} is not an exit gate (direction: {gate.direction})")
+            
+        exit_time = datetime.now(timezone.utc)
+        rule_type = "hourly"
+        rule_config = {
+            "free_grace_minutes": 15,
+            "first_hours": 4,
+            "first_amount": 5000.0,
+            "next_hour_amount": 2000.0,
+            "max_daily_amount": 30000.0
+        }
+        
+        if active_session.vehicle_type_id:
+            try:
+                rule_query = await db.execute(
+                    select(FeeRule)
+                    .where(FeeRule.vehicle_type_id == active_session.vehicle_type_id)
+                    .where(FeeRule.is_active == True)
+                    .order_by(FeeRule.priority.desc())
+                )
+                rule = rule_query.scalars().first()
+                if rule:
+                    rule_type = rule.rule_type
+                    rule_config = rule.config
+                    active_session.fee_rule_id = rule.id
+            except Exception as re:
+                logger.warning(f"Error querying fee rules: {re}. Using defaults.")
+                
+        # Calculate fee
+        fee = PricingEngine.calculate_fee(
+            entry_time=active_session.entry_time,
+            exit_time=exit_time,
+            rule_type=rule_type,
+            config=rule_config
+        )
+        
+        # Update session
+        active_session.exit_time = exit_time
+        active_session.gate_exit_id = gate.id
+        active_session.exit_plate_number = plate_number
+        active_session.exit_card_id = card.id
+        active_session.calculated_fee = fee
+        active_session.status = "completed"
+        active_session.payment_status = "paid" if fee == 0.0 else "unpaid"
+        
+        # Publish checkout.completed realtime event
+        realtime_event = {
+            "event_type": "parking.checkout.completed",
+            "source": "parking-api",
+            "session_id": str(active_session.id),
+            "site_id": str(active_session.site_id),
+            "gate_id": str(active_session.gate_exit_id),
+            "correlation_id": correlation_id,
+            "payload": {
+                "session_code": active_session.session_code,
+                "card_uid": card.card_uid,
+                "entry_time": active_session.entry_time.isoformat(),
+                "exit_time": active_session.exit_time.isoformat(),
+                "calculated_fee": active_session.calculated_fee,
+                "status": active_session.status,
+                "payment_status": active_session.payment_status
+            }
+        }
+        await redis_client.redis.publish("parking.realtime", json.dumps(realtime_event))
+        logger.info(f"Check-out processed successfully for card {card_uid}. Session: {active_session.session_code}, Fee: {fee}")
+
+async def handle_event(event_id: uuid.UUID, event_type: str, correlation_id: str, payload: dict, metadata: dict):
+    """
+    Handle single event with Postgres database transaction and idempotency check.
+    """
+    async with async_session_maker() as db:
+        try:
+            # 1. Idempotency Check
+            dup_query = await db.execute(
+                select(ProcessedEvent).where(ProcessedEvent.event_id == event_id)
+            )
+            existing_event = dup_query.scalars().first()
+            if existing_event:
+                logger.info(f"Event {event_id} already processed (status: {existing_event.status}). Skipping.")
+                return True
+                
+            # Record processing status
+            proc_event = ProcessedEvent(
+                event_id=event_id,
+                event_type=event_type,
+                status="processing"
+            )
+            db.add(proc_event)
+            await db.flush()
+            
+            # 2. Route event based on type
+            if event_type == "card.scanned":
+                await process_card_scanned(db, event_id, correlation_id, payload, metadata)
+            else:
+                logger.warning(f"Unhandled event type: {event_type}")
+                
+            # Update to completed
+            proc_event.status = "completed"
+            await db.commit()
+            return True
+            
+        except Exception as e:
+            await db.rollback()
+            logger.error(f"Failed to process event {event_id}: {e}", exc_info=True)
+            
+            # Try to record failure status
+            try:
+                async with async_session_maker() as fail_db:
+                    # Clean up existing registration if in rollback
+                    fail_dup = await fail_db.execute(
+                        select(ProcessedEvent).where(ProcessedEvent.event_id == event_id)
+                    )
+                    existing_fail = fail_dup.scalars().first()
+                    if not existing_fail:
+                        fail_event = ProcessedEvent(
+                            event_id=event_id,
+                            event_type=event_type,
+                            status="failed",
+                            error_message=str(e)
+                        )
+                        fail_db.add(fail_event)
+                    else:
+                        existing_fail.status = "failed"
+                        existing_fail.error_message = str(e)
+                    await fail_db.commit()
+            except Exception as db_err:
+                logger.critical(f"Failed to save event failure status to database: {db_err}")
+                
+            return False
+
+async def start_event_consumer():
+    """
+    Infinite loop running background stream reader using consumer groups
+    """
+    stream_name = "parking.events"
+    group_name = "parking-api-group"
+    consumer_name = f"api-{uuid.uuid4().hex[:6]}"
+    
+    # Wait for Redis connection to be initialized
+    while not redis_client.redis:
+        logger.info("Waiting for Redis connection...")
+        await asyncio.sleep(1)
+        
+    # Create consumer group if not exists
+    try:
+        await redis_client.redis.xgroup_create(
+            name=stream_name,
+            groupname=group_name,
+            id="$",
+            mkstream=True
+        )
+        logger.info(f"Created Consumer Group '{group_name}' for Stream '{stream_name}'")
+    except Exception as e:
+        if "BUSYGROUP" in str(e):
+            logger.info(f"Consumer Group '{group_name}' already exists.")
+        else:
+            logger.error(f"Failed to create consumer group: {e}")
+            
+    logger.info(f"Started reading events from Stream '{stream_name}' using group '{group_name}'")
+    
+    while True:
+        try:
+            # Read messages from group
+            response = await redis_client.redis.xreadgroup(
+                groupname=group_name,
+                consumername=consumer_name,
+                streams={stream_name: ">"},
+                count=10,
+                block=2000
+            )
+            
+            if not response:
+                continue
+                
+            for stream, messages in response:
+                for message_id, payload in messages:
+                    logger.info(f"Received stream event message: {message_id}")
+                    
+                    try:
+                        # Extract event content
+                        event_data = {}
+                        if "data" in payload:
+                            event_data = json.loads(payload["data"])
+                        else:
+                            event_data = payload
+                            
+                        event_id_str = event_data.get("event_id")
+                        event_type = event_data.get("event_type")
+                        correlation_id = event_data.get("correlation_id", "")
+                        
+                        if not event_id_str or not event_type:
+                            logger.error(f"Invalid event data structure: {event_data}")
+                            # Acknowledge to prevent blocking
+                            await redis_client.redis.xack(stream_name, group_name, message_id)
+                            continue
+                            
+                        event_id = uuid.UUID(event_id_str)
+                        
+                        # Handle the event logic
+                        success = await handle_event(
+                            event_id=event_id,
+                            event_type=event_type,
+                            correlation_id=correlation_id,
+                            payload=event_data.get("payload", {}),
+                            metadata=event_data
+                        )
+                        
+                        if success:
+                            # Send XACK if processed successfully or safely skipped
+                            await redis_client.redis.xack(stream_name, group_name, message_id)
+                            logger.info(f"Event ACKed: {message_id}")
+                        else:
+                            logger.warning(f"Event processing failed for message {message_id}. Will not ACK.")
+                            # We can implement simple retry limit here or let other consumers fetch it.
+                            # For MVP/Phase 3, we ACK it to avoid infinite loops, but log the failure.
+                            await redis_client.redis.xack(stream_name, group_name, message_id)
+                            
+                    except Exception as parse_err:
+                        logger.error(f"Parse error for stream message {message_id}: {parse_err}")
+                        await redis_client.redis.xack(stream_name, group_name, message_id)
+                        
+        except asyncio.CancelledError:
+            logger.info("Event consumer task cancelled.")
+            break
+        except Exception as loop_err:
+            logger.error(f"Error in event consumer loop: {loop_err}")
+            await asyncio.sleep(5)

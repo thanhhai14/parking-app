@@ -5,9 +5,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 
+import asyncio
 from core.config import settings
 from core.logger import setup_logging
 from core.database import get_db_session
+from core.redis import redis_client
+from services.event_consumer import start_event_consumer
 from api.v1.auth import router as auth_router
 from api.v1.media import router as media_router
 from api.v1.vehicles import router as vehicles_router
@@ -20,11 +23,23 @@ from api.v1.parking import router as parking_router
 setup_logging()
 logger = logging.getLogger("parking-api")
 
+event_consumer_task = None
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global event_consumer_task
     logger.info("Starting up parking-api service...")
+    redis_client.connect()
+    event_consumer_task = asyncio.create_task(start_event_consumer())
     yield
     logger.info("Shutting down parking-api service...")
+    if event_consumer_task:
+        event_consumer_task.cancel()
+        try:
+            await event_consumer_task
+        except asyncio.CancelledError:
+            pass
+    await redis_client.disconnect()
 
 app = FastAPI(
     title=settings.APP_NAME,

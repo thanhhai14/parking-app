@@ -33,6 +33,7 @@ from models.device import Device, Camera
 from models.media import MediaFile
 from models.fee import FeeRule
 from models.session import ParkingSession, Payment
+from models.processed_event import ProcessedEvent
 
 target_metadata = Base.metadata
 

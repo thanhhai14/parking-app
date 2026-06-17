@@ -51,34 +51,15 @@
 ---
 
 ## 4. Kết quả kiểm thử & Xác minh (Verification)
-1. **Unit Test (Pytest)**:
-   - Chạy lệnh `pytest tests/` thành công tuyệt đối:
+1. **Kiểm thử tự động toàn diện (Pytest)**:
+   - Chạy lệnh `docker compose exec -T -e PYTHONPATH=. parking-api pytest test/` để thực thi cả unit test tính phí và E2E flow test. Kết quả thành công tuyệt đối:
      ```text
-     tests/test_pricing.py ...
-     ============================== 3 passed in 0.01s ===============================
-     ```
-2. **Kiểm thử Luồng Nghiệp vụ E2E (scratch_test.py)**:
-   - Chạy kịch bản giả lập tuần tự: Đăng nhập -> Tạo Site -> Tạo Zone -> Tạo Cổng Vào -> Tạo Cổng Ra -> Tạo Loại xe -> Đăng ký thẻ -> Quẹt xe vào (Check-in) -> Quẹt xe ra (Check-out):
-     ```text
-     1. Logging in...
-     2. Creating Parking Site...
-     Created site: c65372e2-b830-4b5e-9d14-2bcb4bf161d1
-     3. Creating Parking Zone...
-     Created zone: 3094db24-99d5-4a0d-a46d-ba2a4d74ae30
-     4. Creating Entry Gate...
-     Created entry gate: GATE-IN-01
-     5. Creating Exit Gate...
-     Created exit gate: GATE-OUT-01
-     6. Creating Vehicle Type...
-     Created vehicle type: motorbike
-     7. Creating RFID Card...
-     Created card: CARD-TEST-1111
-     8. Performing Check-in (Public API)...
-     Check-in successful! Session code: PK-20260617103144-8708, status: active
-     9. Performing Check-out (Public API)...
-     Check-out successful! Calculated fee: 0.0 VND, status: completed
-     
-     --- ALL TESTS PASSED SUCCESSFULLY! ---
+     collected 4 items
+
+     test/02_core_api_e2e_test.py .                                           [ 25%]
+     test/02_core_api_pricing_test.py ...                                     [100%]
+     ============================== 4 passed in 0.41s ===============================
      ```
 
 Hệ thống Core API đã hoàn thiện phần CSDL nghiệp vụ và tính phí đỗ xe. Dự án sẵn sàng chuyển sang **Phase 3: Gateway & EventBus (WebSocket & Redis Streams)**.
+
