@@ -66,6 +66,10 @@ Các tài liệu chi tiết về hệ thống được đặt trong thư mục `
 * **Kiến trúc tổng quan**: [docs/ARCHITECTURE.md](file:///home/thanhhai14/Data/Code/parking-app/docs/ARCHITECTURE.md)
 * **Thiết kế cơ sở dữ liệu**: [docs/DATABASE.md](file:///home/thanhhai14/Data/Code/parking-app/docs/DATABASE.md)
 * **Hướng dẫn triển khai**: [docs/DEPLOYMENT.md](file:///home/thanhhai14/Data/Code/parking-app/docs/DEPLOYMENT.md)
+* **Giám sát & Vận hành**: [docs/OBSERVABILITY.md](file:///home/thanhhai14/Data/Code/parking-app/docs/OBSERVABILITY.md)
+* **Chiến lược Kiểm thử**: [docs/TESTING.md](file:///home/thanhhai14/Data/Code/parking-app/docs/TESTING.md)
+* **Phục hồi Thảm họa**: [docs/DISASTER_RECOVERY.md](file:///home/thanhhai14/Data/Code/parking-app/docs/DISASTER_RECOVERY.md)
+* **Hướng dẫn Dev Cục bộ**: [docs/LOCAL_DEV.md](file:///home/thanhhai14/Data/Code/parking-app/docs/LOCAL_DEV.md)
 * **Sơ đồ cấu trúc thư mục**: [docs/Project_Tree.md](file:///home/thanhhai14/Data/Code/parking-app/docs/Project_Tree.md)
 * **Tài liệu các Service**:
   * [Parking Gateway Docs](file:///home/thanhhai14/Data/Code/parking-app/docs/services/gateway.md)

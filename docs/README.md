@@ -34,6 +34,11 @@ flowchart TD
     SECURITY["SECURITY.md<br/>Bảo mật"]
     DEPLOY["DEPLOYMENT.md<br/>Triển khai"]
     CONTRIB["CONTRIBUTING.md<br/>Đóng góp dự án"]
+    OBSERVABILITY["OBSERVABILITY.md<br/>Giám sát & Vận hành"]
+    TESTING["TESTING.md<br/>Chiến lược Kiểm thử"]
+    DR["DISASTER_RECOVERY.md<br/>Khôi phục thảm họa"]
+    LOCAL_DEV["LOCAL_DEV.md<br/>Hướng dẫn Dev cục bộ"]
+    AIGUIDE[".agents/codex.md<br/>Hướng dẫn cho AI Codex"]
 
     COMPOSE["docker-compose.yml<br/>Chạy toàn bộ service"]
     ENV[".env.example<br/>Mẫu biến môi trường"]
@@ -57,6 +62,11 @@ flowchart TD
     ROOT --> SECURITY
     ROOT --> DEPLOY
     ROOT --> CONTRIB
+    ROOT --> OBSERVABILITY
+    ROOT --> TESTING
+    ROOT --> DR
+    ROOT --> LOCAL_DEV
+    ROOT --> AIGUIDE
 
     CONFIG --> ENV
     DEPLOY --> COMPOSE
@@ -93,6 +103,11 @@ flowchart TD
     click SECURITY "./SECURITY.md" "Mở SECURITY.md"
     click DEPLOY "./DEPLOYMENT.md" "Mở DEPLOYMENT.md"
     click CONTRIB "./CONTRIBUTING.md" "Mở CONTRIBUTING.md"
+    click OBSERVABILITY "./OBSERVABILITY.md" "Mở OBSERVABILITY.md"
+    click TESTING "./TESTING.md" "Mở TESTING.md"
+    click DR "./DISASTER_RECOVERY.md" "Mở DISASTER_RECOVERY.md"
+    click LOCAL_DEV "./LOCAL_DEV.md" "Mở LOCAL_DEV.md"
+    click AIGUIDE "../.agents/codex.md" "Mở .agents/codex.md"
 
     click COMPOSE "../docker-compose.yml" "Mở docker-compose.yml"
     click ENV "../.env.example" "Mở .env.example"
@@ -357,6 +372,106 @@ Nên đọc khi:
 * Muốn sửa tài liệu
 * Muốn gửi bug report
 * Muốn làm việc nhóm trên dự án
+
+---
+
+## 2.11. OBSERVABILITY.md
+
+Đường dẫn:
+
+[OBSERVABILITY.md](./OBSERVABILITY.md)
+
+Chức năng:
+
+* Hướng dẫn thiết lập Prometheus, Grafana
+* Định nghĩa định dạng log tiêu chuẩn
+* Hướng dẫn truy vết Request ID
+* Thiết lập hệ thống Alerting (Telegram/Slack)
+* Kiểm tra Health Checks
+
+Nên đọc khi:
+
+* Cần giám sát trạng thái hệ thống
+* Tìm nguyên nhân lỗi trên Production
+* Xây dựng Dashboard theo dõi
+
+---
+
+## 2.12. TESTING.md
+
+Đường dẫn:
+
+[TESTING.md](./TESTING.md)
+
+Chức năng:
+
+* Quy định chiến lược viết Unit Test, Integration Test, E2E Test
+* Hướng dẫn mock database và thiết bị ngoại vi
+* Tích hợp CI/CD Pipeline
+
+Nên đọc khi:
+
+* Viết code mới và cần test
+* Setup môi trường tự động kiểm thử
+
+---
+
+## 2.13. DISASTER_RECOVERY.md
+
+Đường dẫn:
+
+[DISASTER_RECOVERY.md](./DISASTER_RECOVERY.md)
+
+Chức năng:
+
+* Hướng dẫn chiến lược sao lưu dữ liệu (Postgres, Redis)
+* Các kịch bản khôi phục khi server bị hỏng
+* Hướng dẫn xử lý khi mất đồng bộ dữ liệu (Offline Queue)
+
+Nên đọc khi:
+
+* Xây dựng kịch bản an toàn dữ liệu
+* Thực tập khôi phục hệ thống
+* Cứu hộ hệ thống lúc gặp sự cố
+
+---
+
+## 2.14. LOCAL_DEV.md
+
+Đường dẫn:
+
+[LOCAL_DEV.md](./LOCAL_DEV.md)
+
+Chức năng:
+
+* Hướng dẫn cấu hình môi trường phát triển nhanh chóng
+* Các bước khởi tạo DB, cài dependencies
+* Cách chạy giả lập các thiết bị ngoại vi (Device Agent Mock)
+* Bảng xử lý các lỗi thường gặp lúc cài cắm
+
+Nên đọc khi:
+
+* Mới tham gia vào dự án
+* Muốn chạy thử code ở môi trường localhost nhanh nhất
+
+---
+
+## 2.15. .agents/codex.md
+
+Đường dẫn:
+
+[../.agents/codex.md](../.agents/codex.md)
+
+Chức năng:
+
+* Hướng dẫn các quy tắc cốt lõi cho trợ lý AI (Codex, Antigravity)
+* Ngăn chặn AI viết code phá vỡ kiến trúc
+* Ép AI đọc và cập nhật các tài liệu Markdown khi sửa code
+
+Nên đọc khi:
+
+* Cần copy nội dung để prompt cho công cụ AI mới
+* Nhắc AI tuân thủ luật lệ của project
 
 ---
 
@@ -662,6 +777,11 @@ docker-compose.yml
 | `SECURITY.md`         | Khóa nguyên tắc bảo mật            |
 | `DEPLOYMENT.md`       | Hướng dẫn triển khai               |
 | `CONTRIBUTING.md`     | Hướng dẫn đóng góp                 |
+| `OBSERVABILITY.md`    | Hướng dẫn giám sát, log, alert     |
+| `TESTING.md`          | Tiêu chuẩn và cách viết test       |
+| `DISASTER_RECOVERY.md`| Kịch bản sao lưu và phục hồi       |
+| `LOCAL_DEV.md`        | Cẩm nang cài đặt local nhanh       |
+| `.agents/codex.md`    | Hướng dẫn dành cho Trợ lý AI       |
 | `services/*.md`       | Chi tiết kỹ thuật từng service     |
 
 ---
