@@ -39,6 +39,7 @@ flowchart TD
     DR["DISASTER_RECOVERY.md<br/>Khôi phục thảm họa"]
     LOCAL_DEV["LOCAL_DEV.md<br/>Hướng dẫn Dev cục bộ"]
     AIGUIDE[".agents/codex.md<br/>Hướng dẫn cho AI Codex"]
+    PLAN["plans/README.md<br/>Lộ trình Phát triển"]
 
     COMPOSE["docker-compose.yml<br/>Chạy toàn bộ service"]
     ENV[".env.example<br/>Mẫu biến môi trường"]
@@ -67,6 +68,7 @@ flowchart TD
     ROOT --> DR
     ROOT --> LOCAL_DEV
     ROOT --> AIGUIDE
+    ROOT --> PLAN
 
     CONFIG --> ENV
     DEPLOY --> COMPOSE
@@ -108,6 +110,7 @@ flowchart TD
     click DR "./DISASTER_RECOVERY.md" "Mở DISASTER_RECOVERY.md"
     click LOCAL_DEV "./LOCAL_DEV.md" "Mở LOCAL_DEV.md"
     click AIGUIDE "../.agents/codex.md" "Mở .agents/codex.md"
+    click PLAN "./plans/README.md" "Mở Lộ trình Phát triển"
 
     click COMPOSE "../docker-compose.yml" "Mở docker-compose.yml"
     click ENV "../.env.example" "Mở .env.example"
@@ -475,6 +478,25 @@ Nên đọc khi:
 
 ---
 
+## 2.16. plans/README.md
+
+Đường dẫn:
+
+[plans/README.md](./plans/README.md)
+
+Chức năng:
+
+* Lưu trữ tiến độ phát triển dự án từ số 0 đến 100%.
+* Chứa danh sách 7 Phase phát triển.
+* Checklist công việc cho dev theo dõi.
+
+Nên đọc khi:
+
+* Quản lý tiến độ dự án
+* Bắt đầu Code tính năng mới theo roadmap
+
+---
+
 # 3. File chạy hệ thống
 
 ## 3.1. docker-compose.yml
@@ -782,6 +804,7 @@ docker-compose.yml
 | `DISASTER_RECOVERY.md`| Kịch bản sao lưu và phục hồi       |
 | `LOCAL_DEV.md`        | Cẩm nang cài đặt local nhanh       |
 | `.agents/codex.md`    | Hướng dẫn dành cho Trợ lý AI       |
+| `plans/README.md`     | Lộ trình phát triển hệ thống       |
 | `services/*.md`       | Chi tiết kỹ thuật từng service     |
 
 ---
