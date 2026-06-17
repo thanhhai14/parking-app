@@ -17,6 +17,15 @@ class Settings(BaseSettings):
     # Redis connection
     REDIS_URL: str = "redis://localhost:6379/0"
     
+    # MinIO / S3
+    MINIO_ENDPOINT: str = "localhost:9000"
+    MINIO_PUBLIC_ENDPOINT: str = "http://localhost:9000"
+    MINIO_ACCESS_KEY: str = "minioadmin"
+    MINIO_SECRET_KEY: str = "minioadmin"
+    MINIO_BUCKET: str = "parking-media"
+    MINIO_SECURE: bool = False
+
+    
     # JWT settings
     JWT_SECRET: str = "CHANGE_ME_USE_OPENSSL_RAND_HEX_32"
     JWT_ALGORITHM: str = "HS256"

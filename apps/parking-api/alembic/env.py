@@ -24,10 +24,18 @@ if config.config_file_name is not None:
 # add your model's MetaData object here
 # for 'autogenerate' support
 from core.database import Base
-# Import models here to make sure they are registered on Base.metadata
+# Import all models to ensure they are registered on Base.metadata
 from models.user import Role, User
+from models.parking_lot import ParkingSite, ParkingZone, ParkingGate
+from models.vehicle import VehicleType, VehicleOwner, Vehicle
+from models.card import RfidCard
+from models.device import Device, Camera
+from models.media import MediaFile
+from models.fee import FeeRule
+from models.session import ParkingSession, Payment
 
 target_metadata = Base.metadata
+
 
 # Retrieve database URL from core.config settings and override it
 from core.config import settings

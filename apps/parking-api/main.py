@@ -9,6 +9,12 @@ from core.config import settings
 from core.logger import setup_logging
 from core.database import get_db_session
 from api.v1.auth import router as auth_router
+from api.v1.media import router as media_router
+from api.v1.vehicles import router as vehicles_router
+from api.v1.cards import router as cards_router
+from api.v1.devices import router as devices_router
+from api.v1.parking import router as parking_router
+
 
 # Initialize logging configuration
 setup_logging()
@@ -37,6 +43,12 @@ app.add_middleware(
 
 # Include routers
 app.include_router(auth_router, prefix="/api/v1/auth", tags=["auth"])
+app.include_router(media_router, prefix="/api/v1/media", tags=["media"])
+app.include_router(vehicles_router, prefix="/api/v1/vehicles", tags=["vehicles"])
+app.include_router(cards_router, prefix="/api/v1/cards", tags=["cards"])
+app.include_router(devices_router, prefix="/api/v1/devices", tags=["devices"])
+app.include_router(parking_router, prefix="/api/v1/parking", tags=["parking"])
+
 
 @app.get("/health", tags=["health"])
 async def health_check(db: AsyncSession = Depends(get_db_session)):
