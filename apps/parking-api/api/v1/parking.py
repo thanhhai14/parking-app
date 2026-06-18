@@ -256,3 +256,50 @@ async def check_out(
         status=session.status,
         payment_status=session.payment_status
     )
+
+
+@router.get("/sessions", response_model=List[SessionResponse])
+async def list_sessions(
+    plate_number: Optional[str] = None,
+    status: Optional[str] = None,
+    db: AsyncSession = Depends(get_db_session)
+):
+    query = select(ParkingSession)
+    if plate_number:
+        query = query.where(
+            (ParkingSession.entry_plate_number.ilike(f"%{plate_number}%")) |
+            (ParkingSession.exit_plate_number.ilike(f"%{plate_number}%"))
+        )
+    if status:
+        query = query.where(ParkingSession.status == status)
+        
+    query = query.order_by(ParkingSession.entry_time.desc())
+    result = await db.execute(query)
+    sessions = result.scalars().all()
+    
+    response_items = []
+    for s in sessions:
+        # Resolve card_uid from entry_card_id
+        card_uid = "unknown"
+        if s.entry_card_id:
+            card_query = await db.execute(select(RfidCard).where(RfidCard.id == s.entry_card_id))
+            card = card_query.scalars().first()
+            if card:
+                card_uid = card.card_uid
+                
+        response_items.append(
+            SessionResponse(
+                id=s.id,
+                session_code=s.session_code,
+                card_uid=card_uid,
+                entry_time=s.entry_time,
+                exit_time=s.exit_time,
+                entry_plate_number=s.entry_plate_number,
+                exit_plate_number=s.exit_plate_number,
+                calculated_fee=float(s.calculated_fee),
+                status=s.status,
+                payment_status=s.payment_status
+            )
+        )
+    return response_items
+

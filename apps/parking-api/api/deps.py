@@ -48,3 +48,17 @@ async def get_current_user(
             detail="User is inactive"
         )
     return user
+
+async def get_current_admin_user(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session)
+) -> User:
+    from models.user import Role
+    result = await db.execute(select(Role).where(Role.id == current_user.role_id))
+    role = result.scalars().first()
+    if not role or role.code != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="The user does not have enough privileges"
+        )
+    return current_user

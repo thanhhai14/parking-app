@@ -9,7 +9,7 @@ from datetime import datetime
 from core.database import get_db_session
 from models.parking_lot import ParkingSite, ParkingZone, ParkingGate
 from models.device import Device, Camera
-from api.deps import get_current_user
+from api.deps import get_current_user, get_current_admin_user
 from models.user import User
 
 router = APIRouter()
@@ -110,7 +110,7 @@ class CameraResponse(CameraBase):
 async def create_site(
     data: SiteCreate, 
     db: AsyncSession = Depends(get_db_session), 
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_admin_user)
 ):
     result = await db.execute(select(ParkingSite).where(ParkingSite.code == data.code))
     if result.scalars().first():
@@ -126,7 +126,7 @@ async def create_site(
 @router.get("/sites", response_model=List[SiteResponse])
 async def list_sites(
     db: AsyncSession = Depends(get_db_session), 
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_admin_user)
 ):
     result = await db.execute(select(ParkingSite))
     return result.scalars().all()
@@ -136,7 +136,7 @@ async def list_sites(
 async def create_zone(
     data: ZoneCreate, 
     db: AsyncSession = Depends(get_db_session), 
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_admin_user)
 ):
     zone = ParkingZone(**data.model_dump())
     db.add(zone)
@@ -146,7 +146,7 @@ async def create_zone(
 @router.get("/zones", response_model=List[ZoneResponse])
 async def list_zones(
     db: AsyncSession = Depends(get_db_session), 
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_admin_user)
 ):
     result = await db.execute(select(ParkingZone))
     return result.scalars().all()
@@ -156,7 +156,7 @@ async def list_zones(
 async def create_gate(
     data: GateCreate, 
     db: AsyncSession = Depends(get_db_session), 
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_admin_user)
 ):
     gate = ParkingGate(**data.model_dump())
     db.add(gate)
@@ -176,7 +176,7 @@ async def list_gates(
 async def create_device(
     data: DeviceCreate, 
     db: AsyncSession = Depends(get_db_session), 
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_admin_user)
 ):
     result = await db.execute(select(Device).where(Device.code == data.code))
     if result.scalars().first():
@@ -202,7 +202,7 @@ async def list_devices(
 async def create_camera(
     data: CameraCreate, 
     db: AsyncSession = Depends(get_db_session), 
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_admin_user)
 ):
     result = await db.execute(select(Camera).where(Camera.code == data.code))
     if result.scalars().first():
@@ -218,7 +218,161 @@ async def create_camera(
 @router.get("/cameras", response_model=List[CameraResponse])
 async def list_cameras(
     db: AsyncSession = Depends(get_db_session), 
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_admin_user)
 ):
     result = await db.execute(select(Camera))
     return result.scalars().all()
+
+
+class DeviceControl(BaseModel):
+    command: str
+
+@router.post("/{device_id}/control")
+async def control_device(
+    device_id: uuid.UUID,
+    data: DeviceControl,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user)
+):
+    # Fetch device details
+    from sqlalchemy.orm import selectinload
+    result = await db.execute(
+        select(Device)
+        .options(selectinload(Device.gate).selectinload(ParkingGate.zone))
+        .where(Device.id == device_id)
+    )
+    device = result.scalars().first()
+    if not device:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Device not found"
+        )
+        
+    if data.command != "barrier.open":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported control command: {data.command}"
+        )
+        
+    # Build open command payload
+    import json
+    from datetime import timezone
+    from core.redis import redis_client
+    
+    site_id_str = str(device.gate.zone.site_id) if (device.gate and device.gate.zone) else str(uuid.uuid4())
+    gate_id_str = str(device.gate_id) if device.gate_id else str(uuid.uuid4())
+    
+    barrier_command = {
+        "command_id": str(uuid.uuid4()),
+        "command_type": "barrier.open.request",
+        "target_agent_id": device.agent_id or "device-agent-gate-01",
+        "target_device_id": str(device.id),
+        "site_id": site_id_str,
+        "gate_id": gate_id_str,
+        "correlation_id": str(uuid.uuid4()),
+        "payload": {
+            "duration_ms": 1500
+        },
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    
+    # Publish to Redis commands stream
+    await redis_client.redis.xadd("parking.commands", {"data": json.dumps(barrier_command)})
+    
+    return {
+        "status": "success",
+        "message": f"Command '{data.command}' sent to agent '{device.agent_id}'",
+        "command_id": barrier_command["command_id"]
+    }
+
+
+@router.put("/{device_id}", response_model=DeviceResponse)
+async def update_device(
+    device_id: uuid.UUID,
+    data: DeviceCreate,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_admin_user)
+):
+    result = await db.execute(select(Device).where(Device.id == device_id))
+    device = result.scalars().first()
+    if not device:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Device not found"
+        )
+    
+    for k, v in data.model_dump(exclude_unset=True).items():
+        setattr(device, k, v)
+    await db.commit()
+    
+    # Reload from DB to avoid lazy-loading expired state during serialization
+    stmt = select(Device).where(Device.id == device.id)
+    res = await db.execute(stmt)
+    return res.scalars().first()
+
+
+@router.delete("/{device_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_device(
+    device_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_admin_user)
+):
+    result = await db.execute(select(Device).where(Device.id == device_id))
+    device = result.scalars().first()
+    if not device:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Device not found"
+        )
+    await db.delete(device)
+    await db.commit()
+    return None
+
+
+@router.put("/cameras/{camera_id}", response_model=CameraResponse)
+async def update_camera(
+    camera_id: uuid.UUID,
+    data: CameraCreate,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_admin_user)
+):
+    result = await db.execute(select(Camera).where(Camera.id == camera_id))
+    camera = result.scalars().first()
+    if not camera:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Camera not found"
+        )
+    
+    for k, v in data.model_dump(exclude_unset=True).items():
+        if k == "password_secret_key" and v is not None:
+            camera.password_secret_key = v
+        else:
+            setattr(camera, k, v)
+            
+    await db.commit()
+    
+    # Reload from DB to avoid lazy-loading expired state during serialization
+    stmt = select(Camera).where(Camera.id == camera.id)
+    res = await db.execute(stmt)
+    return res.scalars().first()
+
+
+@router.delete("/cameras/{camera_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_camera(
+    camera_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_admin_user)
+):
+    result = await db.execute(select(Camera).where(Camera.id == camera_id))
+    camera = result.scalars().first()
+    if not camera:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Camera not found"
+        )
+    await db.delete(camera)
+    await db.commit()
+    return None
+
+

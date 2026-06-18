@@ -92,3 +92,62 @@ async def upload_media(
         media_type=media_record.media_type,
         presigned_url=presigned_url or ""
     )
+
+
+@router.get("/{media_id}", response_model=MediaResponse)
+async def get_media_details(
+    media_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user)
+):
+    from sqlalchemy.future import select
+    result = await db.execute(select(MediaFile).where(MediaFile.id == media_id))
+    media = result.scalars().first()
+    if not media:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Media file not found"
+        )
+    presigned_url = minio_client.get_presigned_url(media.object_key)
+    return MediaResponse(
+        id=media.id,
+        bucket=media.bucket,
+        object_key=media.object_key,
+        file_name=media.file_name,
+        mime_type=media.mime_type,
+        file_size=media.file_size,
+        media_type=media.media_type,
+        presigned_url=presigned_url or ""
+    )
+
+
+@router.get("/{media_id}/stream")
+async def stream_media(
+    media_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db_session)
+):
+    from sqlalchemy.future import select
+    from fastapi.responses import StreamingResponse
+    result = await db.execute(select(MediaFile).where(MediaFile.id == media_id))
+    media = result.scalars().first()
+    if not media:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Media file not found"
+        )
+        
+    try:
+        response = minio_client.client.get_object(
+            Bucket=media.bucket,
+            Key=media.object_key
+        )
+        return StreamingResponse(
+            response['Body'], 
+            media_type=media.mime_type
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to stream media: {e}"
+        )
+

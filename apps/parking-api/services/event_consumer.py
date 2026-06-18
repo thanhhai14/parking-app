@@ -89,21 +89,29 @@ async def handle_card_scanned_event(db, event_id: uuid.UUID, correlation_id: str
     elif action == "check-out" and gate.direction not in ["out", "both"]:
         raise ValueError(f"Gate {gate.code} is not an exit gate (direction: {gate.direction})")
 
-    # 4. Find Camera associated with this Gate
+    # 4. Find all Cameras associated with this Gate
     camera_query = await db.execute(
-        select(Camera).where(Camera.gate_id == gate.id)
+        select(Camera).where(Camera.gate_id == gate.id).where(Camera.is_active == True)
     )
-    camera = camera_query.scalars().first()
+    cameras = camera_query.scalars().all()
     
-    camera_agent_id = "camera-agent-gate-01"
-    camera_id_str = str(uuid.uuid4())
-    
-    if camera:
-        camera_id_str = str(camera.id)
-        if camera.agent_id:
-            camera_agent_id = camera.agent_id
-    else:
-        logger.warning(f"No camera registered in database for gate {gate_code}. Using defaults.")
+    if not cameras:
+        # Bypassing camera snapshots wait since no cameras are configured for this gate
+        logger.warning(f"No camera registered in database for gate {gate_code}. Bypassing camera snapshots wait.")
+        state = {
+            "card_uid": card_uid,
+            "gate_code": gate.code,
+            "plate_number": plate_number,
+            "action": action,
+            "gate_id": str(gate.id),
+            "site_id": str(gate.zone.site_id),
+            "zone_id": str(gate.zone_id),
+            "pending_snapshots": {}
+        }
+        await execute_complete_parking_session(db, state, correlation_id)
+        return
+        
+    pending_snapshots = {str(cam.id): None for cam in cameras}
 
     # 5. Cache the scan state in Redis
     state = {
@@ -113,51 +121,38 @@ async def handle_card_scanned_event(db, event_id: uuid.UUID, correlation_id: str
         "action": action,
         "gate_id": str(gate.id),
         "site_id": str(gate.zone.site_id),
-        "zone_id": str(gate.zone_id)
+        "zone_id": str(gate.zone_id),
+        "pending_snapshots": pending_snapshots
     }
     redis_key = f"pending_session:{correlation_id}"
-    await redis_client.redis.setex(redis_key, 300, json.dumps(state))
-    logger.info(f"Cached state for correlation {correlation_id} in Redis (TTL: 300s). Action: {action}")
+    await redis_client.redis.setex(redis_key, 15, json.dumps(state))
+    logger.info(f"Cached state for correlation {correlation_id} in Redis (TTL: 15s). Action: {action}, Cameras waiting: {list(pending_snapshots.keys())}")
     
-    # 6. Issue camera.snapshot.request Command to Redis Stream
-    snapshot_command = {
-        "command_id": str(uuid.uuid4()),
-        "command_type": "camera.snapshot.request",
-        "target_agent_id": camera_agent_id,
-        "target_camera_id": camera_id_str,
-        "site_id": str(gate.zone.site_id),
-        "gate_id": str(gate.id),
-        "correlation_id": correlation_id,
-        "payload": {
-            "snapshot_type": "entry_overview" if action == "check-in" else "exit_overview",
-            "plate_number": plate_number
-        },
-        "created_at": datetime.now(timezone.utc).isoformat()
-    }
-    
-    await redis_client.redis.xadd("parking.commands", {"data": json.dumps(snapshot_command)})
-    logger.info(f"Published camera snapshot request command for agent '{camera_agent_id}' to parking.commands stream.")
+    # 6. Issue camera.snapshot.request Command to Redis Stream for each camera
+    for cam in cameras:
+        snapshot_command = {
+            "command_id": str(uuid.uuid4()),
+            "command_type": "camera.snapshot.request",
+            "target_agent_id": cam.agent_id or "camera-agent-gate-01",
+            "target_camera_id": str(cam.id),
+            "site_id": str(gate.zone.site_id),
+            "gate_id": str(gate.id),
+            "correlation_id": correlation_id,
+            "payload": {
+                "snapshot_type": "entry_overview" if action == "check-in" else "exit_overview",
+                "plate_number": plate_number
+            },
+            "created_at": datetime.now(timezone.utc).isoformat()
+        }
+        await redis_client.redis.xadd("parking.commands", {"data": json.dumps(snapshot_command)})
+        logger.info(f"Published camera snapshot request command for camera '{cam.id}' via agent '{cam.agent_id}' to parking.commands stream.")
 
-async def handle_snapshot_completed_event(db, event_id: uuid.UUID, correlation_id: str, payload: dict, metadata: dict):
+
+async def execute_complete_parking_session(db, state: dict, correlation_id: str):
     """
-    Step 2 of flow: Camera snapshot completed.
-    We fetch cached state from Redis, perform the CSDL updates, issue a barrier open command,
-    and publish the final realtime success event.
+    Core DB session updates, pricing engine calculations, barrier trigger, 
+    and realtime dashboard notifications.
     """
-    media_id_str = payload.get("media_id")
-    if not media_id_str:
-        raise ValueError("Missing 'media_id' in snapshot completed payload.")
-    
-    media_id = uuid.UUID(media_id_str)
-    
-    # 1. Fetch cached state from Redis
-    redis_key = f"pending_session:{correlation_id}"
-    state_str = await redis_client.redis.get(redis_key)
-    if not state_str:
-        logger.warning(f"No pending session found in Redis for correlation {correlation_id} (expired or invalid).")
-        return
-        
-    state = json.loads(state_str)
     card_uid = state["card_uid"]
     gate_code = state["gate_code"]
     plate_number = state["plate_number"]
@@ -165,7 +160,39 @@ async def handle_snapshot_completed_event(db, event_id: uuid.UUID, correlation_i
     gate_id = uuid.UUID(state["gate_id"])
     site_id = uuid.UUID(state["site_id"])
     zone_id = uuid.UUID(state["zone_id"])
+    pending_snapshots = state.get("pending_snapshots", {})
+
+    # We have all snapshots! Resolve which is plate vs overview
+    plate_image_id = None
+    overview_image_id = None
     
+    for cam_id_str, m_id_str in pending_snapshots.items():
+        if not m_id_str:
+            continue
+        try:
+            cam_uuid = uuid.UUID(cam_id_str)
+            c_query = await db.execute(select(Camera).where(Camera.id == cam_uuid))
+            cam = c_query.scalars().first()
+            role = cam.role if cam else "plate"
+        except Exception:
+            role = "plate"
+            
+        if "plate" in role.lower():
+            plate_image_id = uuid.UUID(m_id_str)
+        elif "overview" in role.lower():
+            overview_image_id = uuid.UUID(m_id_str)
+            
+    # Fallbacks if roles are not explicitly configured
+    if not plate_image_id and pending_snapshots:
+        vals = [v for v in pending_snapshots.values() if v]
+        if vals:
+            plate_image_id = uuid.UUID(vals[0])
+    if not overview_image_id and pending_snapshots:
+        vals = [v for v in pending_snapshots.values() if v]
+        second_val = vals[1] if len(vals) > 1 else (vals[0] if vals else None)
+        if second_val:
+            overview_image_id = uuid.UUID(second_val)
+
     # Fetch active card details
     card_query = await db.execute(
         select(RfidCard)
@@ -203,7 +230,8 @@ async def handle_snapshot_completed_event(db, event_id: uuid.UUID, correlation_i
             entry_card_id=card.id,
             entry_time=datetime.now(timezone.utc),
             entry_plate_number=plate_number,
-            entry_overview_image_id=media_id,
+            entry_overview_image_id=overview_image_id,
+            entry_plate_image_id=plate_image_id,
             status="active"
         )
         db.add(session)
@@ -215,7 +243,9 @@ async def handle_snapshot_completed_event(db, event_id: uuid.UUID, correlation_i
             "card_uid": card.card_uid,
             "entry_time": session.entry_time.isoformat(),
             "entry_plate_number": session.entry_plate_number,
-            "status": session.status
+            "status": session.status,
+            "entry_plate_image_id": str(plate_image_id) if plate_image_id else None,
+            "entry_overview_image_id": str(overview_image_id) if overview_image_id else None
         }
         
         realtime_event_type = "parking.checkin.created"
@@ -271,7 +301,8 @@ async def handle_snapshot_completed_event(db, event_id: uuid.UUID, correlation_i
         active_session.gate_exit_id = gate_id
         active_session.exit_plate_number = plate_number
         active_session.exit_card_id = card.id
-        active_session.exit_overview_image_id = media_id
+        active_session.exit_overview_image_id = overview_image_id
+        active_session.exit_plate_image_id = plate_image_id
         active_session.calculated_fee = fee
         active_session.status = "completed"
         active_session.payment_status = "paid" if fee == 0.0 else "unpaid"
@@ -283,7 +314,11 @@ async def handle_snapshot_completed_event(db, event_id: uuid.UUID, correlation_i
             "exit_time": active_session.exit_time.isoformat(),
             "calculated_fee": float(active_session.calculated_fee),
             "status": active_session.status,
-            "payment_status": active_session.payment_status
+            "payment_status": active_session.payment_status,
+            "entry_plate_image_id": str(active_session.entry_plate_image_id) if active_session.entry_plate_image_id else None,
+            "entry_overview_image_id": str(active_session.entry_overview_image_id) if active_session.entry_overview_image_id else None,
+            "exit_plate_image_id": str(plate_image_id) if plate_image_id else None,
+            "exit_overview_image_id": str(overview_image_id) if overview_image_id else None
         }
         
         realtime_event_type = "parking.checkout.completed"
@@ -338,7 +373,55 @@ async def handle_snapshot_completed_event(db, event_id: uuid.UUID, correlation_i
     logger.info(f"Published final realtime event '{realtime_event_type}' to Pub/Sub channel 'parking.realtime'.")
 
     # 6. Delete cached state from Redis
+    redis_key = f"pending_session:{correlation_id}"
     await redis_client.redis.delete(redis_key)
+
+
+async def handle_snapshot_completed_event(db, event_id: uuid.UUID, correlation_id: str, payload: dict, metadata: dict):
+    """
+    Step 2 of flow: Camera snapshot completed.
+    We fetch cached state from Redis, update snapshot progress. Once all camera snapshots are present,
+    we perform the CSDL updates, issue a barrier open command, and publish the final realtime success event.
+    """
+    media_id_str = payload.get("media_id")
+    if not media_id_str:
+        raise ValueError("Missing 'media_id' in snapshot completed payload.")
+    
+    # 1. Fetch cached state from Redis
+    redis_key = f"pending_session:{correlation_id}"
+    state_str = await redis_client.redis.get(redis_key)
+    if not state_str:
+        logger.warning(f"No pending session found in Redis for correlation {correlation_id} (expired or invalid).")
+        return
+        
+    state = json.loads(state_str)
+    
+    # Track which camera completed this snapshot
+    camera_id_str = metadata.get("camera_id") or payload.get("camera_id")
+    pending_snapshots = state.get("pending_snapshots", {})
+    
+    if camera_id_str and camera_id_str in pending_snapshots:
+        pending_snapshots[camera_id_str] = media_id_str
+    else:
+        # Fallback for backward compatibility (assign to the first empty slot)
+        for k, v in pending_snapshots.items():
+            if v is None:
+                pending_snapshots[k] = media_id_str
+                camera_id_str = k
+                break
+                
+    # Save back to cache
+    state["pending_snapshots"] = pending_snapshots
+    await redis_client.redis.setex(redis_key, 15, json.dumps(state))
+    
+    # Check if we have received snapshots from all cameras
+    all_received = all(v is not None for v in pending_snapshots.values())
+    if not all_received:
+        logger.info(f"Received snapshot from camera {camera_id_str} for correlation {correlation_id}. Waiting for other cameras: {pending_snapshots}")
+        return
+        
+    # We have all snapshots! Call execute_complete_parking_session helper
+    await execute_complete_parking_session(db, state, correlation_id)
 
 async def handle_event(event_id: uuid.UUID, event_type: str, correlation_id: str, payload: dict, metadata: dict):
     """
