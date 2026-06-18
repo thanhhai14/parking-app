@@ -1,0 +1,13 @@
+agent:
+  id: "camera-agent-gate-01"
+  token: "CHANGE_ME_CAMERA_AGENT_TOKEN"
+  type: "camera"
+
+gateway:
+  url: "ws://parking-gateway:8300/ws/camera-agent"
+  heartbeat_interval: 30
+  heartbeat_timeout: 90
+  reconnect_interval: 5
+
+api:
+  upload_url: "http://parking-api:8000/api/v1/media/upload"

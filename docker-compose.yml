@@ -200,6 +200,7 @@ services:
       MOCK_RFID: ${MOCK_RFID}
       MOCK_BARRIER: ${MOCK_BARRIER}
     volumes:
+      - ./apps/parking-device-agent:/app
       - ./config/device-agent.yaml:/app/config/device-agent.yaml:ro
       - device_agent_data:/app/data
     depends_on:
@@ -227,6 +228,7 @@ services:
       MINIO_BUCKET: ${MINIO_BUCKET}
       MOCK_CAMERA: ${MOCK_CAMERA}
     volumes:
+      - ./apps/parking-camera-agent:/app
       - ./config/camera-agent.yaml:/app/config/camera-agent.yaml:ro
       - camera_agent_cache:/app/cache
       - camera_agent_data:/app/data
